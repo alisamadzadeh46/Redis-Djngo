@@ -1,0 +1,57 @@
+name: Redis-In-Action
+services:
+  postgres:
+    image: postgres:18beta1-alpine3.22
+    container_name: project_db
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: project
+    volumes:
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./db-data:/data
+    ports:
+      - "5432:5432"
+  redis:
+    image: redis:7.4.3-alpine
+    container_name: redis_server
+    restart: always
+    ports:
+      - "6379:6379"
+
+  redisinsight:
+    image: redis/redisinsight:2.68
+    container_name: redis_insight
+    depends_on:
+      - redis
+    ports:
+      - "5540:5540"
+    restart: always
+
+  django:
+    build: .
+    container_name: django_app
+    restart: always
+    depends_on:
+      - postgres
+      - redis
+    volumes:
+      - ./app:/app
+    ports:
+      - "8000:8000"
+
+    command: >
+      sh -c "
+          if python manage.py shell -c 'from django.contrib.auth.models import User; print(User.objects.filter(username=\"admin\").exists())' | grep -q 'True'; then
+            echo 'Admin user exists, skipping app and database setup';
+          else
+            rm -f inventory/migrations/0001_initial.py &&
+            python manage.py migrate &&
+            python manage.py makemigrations &&
+            python manage.py migrate inventory --fake &&
+            python manage.py shell -c 'from django.contrib.auth.models import User; User.objects.create_superuser(\"admin\", \"admin@example.com\", \"admin\");' ;
+          fi &&
+          python manage.py runserver 0.0.0.0:8000
+        "
+
