@@ -1,2 +1,3 @@
 .idea
 app/inventory/migrations
+app/cart/migrations
