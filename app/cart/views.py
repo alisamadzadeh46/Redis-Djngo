@@ -16,16 +16,16 @@ class CartView(APIView):
         session_id = request.session.session_key
         cart_data = redis_cart.get_cart(session_id)
         return Response(cart_data)
-    #     promo_code = redis_cart.get_cart_promo_code(session_id)
-    #
-    #     return Response(
-    #         {"items": cart_data, "promo_code": promo_code},
-    #     )
-    #
-    # def delete(self, request):
-    #     session_id = request.session.session_key
-    #     redis_cart.clear_cart(session_id)
-    #     return Response({"message": "Cart cleared."}, status=status.HTTP_200_OK)
+        # promo_code = redis_cart.get_cart_promo_code(session_id)
+        #
+        # return Response(
+        #     {"items": cart_data, "promo_code": promo_code},
+        # )
+
+    def delete(self, request):
+        session_id = request.session.session_key
+        redis_cart.clear_cart(session_id)
+        return Response({"message": "Cart cleared."}, status=status.HTTP_200_OK)
 
 
 class AddToCartView(APIView):
@@ -71,3 +71,44 @@ class RemoveFromCartView(APIView):
         redis_cart.remove_cart(session_id, product_id)
 
         return Response({"message": "Removed from cart."})
+
+
+class UpdateQuantityView(APIView):
+    @extend_schema(
+        request=UpdateQuantitySerializer,
+        responses={200: None},
+        description="Update quantity of a product in the cart. Action can be 'inc' or 'dec'.",
+    )
+    def post(self, request):
+        session_id = request.session.session_key
+        product_id = request.data.get("product_id")
+        action = request.data.get("action", "inc")  # "inc" or "dec"
+
+        if action == "inc":
+            redis_cart.increment_quantity(session_id, product_id)
+        else:
+            redis_cart.decrement_quantity(session_id, product_id)
+
+        return Response({"message": f"{action} quantity successful"})
+
+class SetQuantityView(APIView):
+    @extend_schema(
+        request=SetQuantitySerializer,
+        responses={200: None},
+        description="Set a specific quantity for a product in the cart.",
+    )
+    def post(self, request):
+        session_id = request.session.session_key or request.session.create()
+
+        serializer = SetQuantitySerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        product_id = serializer.validated_data["product_id"]
+        quantity = serializer.validated_data["quantity"]
+
+        updated = redis_cart.set_quantity(session_id, product_id, quantity)
+
+        if not updated:
+            return Response({"error": "Product not found in cart."}, status=404)
+
+        return Response({"message": f"Quantity updated to {quantity}"})
+

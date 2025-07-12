@@ -6,4 +6,6 @@ urlpatterns = [
     path("add/", AddToCartView.as_view()),
     path("get/", CartView.as_view()),
     path("delete/", RemoveFromCartView.as_view()),
+    path("increment/", UpdateQuantityView.as_view()),
+    path("update/qty/", SetQuantityView.as_view()),
 ]
