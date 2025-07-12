@@ -127,3 +127,36 @@ def set_cart_promo_code(session_id, promo_code):
     pipe.set(f"{_cart_key(session_id)}:promo_code", promo_code)
     _refresh_cart_ttl_pipe(pipe, session_id)
     pipe.execute()
+
+
+
+def update_cart_item(session_id, product_id, name, price, quantity):
+    pipe = redis_client.pipeline()
+    details = {
+        "product_id": product_id,
+        "name": name,
+        "price": float(price),
+    }
+
+    pipe.hset(_details_key(session_id), product_id, json.dumps(details))
+    pipe.hset(_qty_key(session_id), product_id, quantity)
+    _refresh_cart_ttl_pipe(pipe, session_id)
+    pipe.execute()
+
+
+
+
+def remove_from_cart(session_id, product_id):
+    qty_key = _qty_key(session_id)
+    details_key = _details_key(session_id)
+    promo_key = f"{_cart_key(session_id)}:promo_code"
+
+    pipe = redis_client.pipeline()
+    pipe.hdel(qty_key, product_id)
+    pipe.hdel(details_key, product_id)
+
+    if redis_client.hlen(qty_key) == 0:  # 1 left before deletion
+        pipe.delete(promo_key)
+
+    _refresh_cart_ttl_pipe(pipe, session_id)
+    pipe.execute()

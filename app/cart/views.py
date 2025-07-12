@@ -3,6 +3,7 @@ from .serializers import *
 from drf_spectacular.utils import extend_schema
 from rest_framework.views import APIView
 from . import redis_cart
+from inventory.models import Product
 from rest_framework import status
 from rest_framework.response import Response
 
@@ -128,3 +129,50 @@ class CartPromoView(APIView):
 
         return Response({"message": "Cart promotion code set."})
 
+class CartCheckoutView(APIView):
+    @extend_schema(
+        responses={200: CheckoutResponseItemSerializer(many=True)},
+        description="Validate and sanitize the cart before checkout. Removes missing products and updates price/name if needed.",
+    )
+    def post(self, request):
+        session_id = request.session.session_key
+        cart_items = redis_cart.get_cart(session_id)
+
+        if not cart_items:
+            return Response([])
+
+        product_ids = [item["product_id"] for item in cart_items]
+
+        # ✅ Single DB hit: get all products that are still active
+        products = Product.objects.filter(id__in=product_ids, is_active=True)
+        product_map = {product.id: product for product in products}
+
+        cleaned_cart = []
+
+        for item in cart_items:
+            product_id = item["product_id"]
+            product = product_map.get(product_id)
+
+            if not product:
+                redis_cart.remove_from_cart(session_id, product_id)
+                continue
+
+            # Check if Redis-stored name/price differs
+            if item["name"] != product.name or float(item["price"]) != float(
+                product.price
+            ):
+                redis_cart.update_cart_item(
+                    session_id,
+                    product_id,
+                    product.name,
+                    product.price,
+                    item["quantity"],
+                )
+                item["name"] = product.name
+                item["price"] = float(product.price)
+
+            item["valid"] = True
+            item["error"] = ""
+            cleaned_cart.append(item)
+
+        return Response(cleaned_cart)
