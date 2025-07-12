@@ -54,6 +54,11 @@ def clear_cart(session_id):
     redis_client.delete(key)
 
 
+def get_cart_promo_code(session_id):
+    key = f"cart:{session_id}:promo_code"
+    return redis_client.get(key)
+
+
 def increment_quantity(session_id, product_id, step=1):
     pipe = redis_client.pipeline()
     pipe.hincrby(_qty_key(session_id), product_id, step)
@@ -114,3 +119,11 @@ def set_quantity(session_id, product_id, quantity):
     pipe.execute()
 
     return True
+
+
+
+def set_cart_promo_code(session_id, promo_code):
+    pipe = redis_client.pipeline()
+    pipe.set(f"{_cart_key(session_id)}:promo_code", promo_code)
+    _refresh_cart_ttl_pipe(pipe, session_id)
+    pipe.execute()

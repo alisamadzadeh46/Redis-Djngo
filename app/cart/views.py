@@ -15,12 +15,10 @@ class CartView(APIView):
     def get(self, request):
         session_id = request.session.session_key
         cart_data = redis_cart.get_cart(session_id)
-        return Response(cart_data)
-        # promo_code = redis_cart.get_cart_promo_code(session_id)
-        #
-        # return Response(
-        #     {"items": cart_data, "promo_code": promo_code},
-        # )
+        promo_code = redis_cart.get_cart_promo_code(session_id)
+        return Response(
+            {"items": cart_data, "promo_code": promo_code},
+        )
 
     def delete(self, request):
         session_id = request.session.session_key
@@ -52,7 +50,6 @@ class AddToCartView(APIView):
         )
 
         return Response({"message": "Added to cart."}, status=status.HTTP_200_OK)
-
 
 
 class RemoveFromCartView(APIView):
@@ -91,6 +88,7 @@ class UpdateQuantityView(APIView):
 
         return Response({"message": f"{action} quantity successful"})
 
+
 class SetQuantityView(APIView):
     @extend_schema(
         request=SetQuantitySerializer,
@@ -111,4 +109,22 @@ class SetQuantityView(APIView):
             return Response({"error": "Product not found in cart."}, status=404)
 
         return Response({"message": f"Quantity updated to {quantity}"})
+
+
+class CartPromoView(APIView):
+    @extend_schema(
+        request=CartPromoSerializer,
+        responses={200: None},
+        description="Apply a promo code to the cart.",
+    )
+    def post(self, request):
+        session_id = request.session.session_key
+
+        serializer = CartPromoSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        promo_code = serializer.validated_data["promo_code"]
+        redis_cart.set_cart_promo_code(session_id, promo_code)
+
+        return Response({"message": "Cart promotion code set."})
 
