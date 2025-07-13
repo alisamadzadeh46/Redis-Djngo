@@ -21,37 +21,60 @@ def _refresh_cart_ttl_pipe(pipe, session_id):
     pipe.expire(f"{_cart_key(session_id)}:promo_code", CART_TTL)
 
 
+def _refresh_cart_ttl(session_id):
+    redis_client.expire(_qty_key(session_id), CART_TTL)
+    redis_client.expire(_details_key(session_id), CART_TTL)
+    redis_client.expire(f"{_cart_key(session_id)}:promo_code", CART_TTL)
+
+
 def _qty_key(session_id):
     return f"{_cart_key(session_id)}:qty"
 
 
 def add_to_cart(session_id, product_id, quantity, name, price):
-    cart_key = _cart_key(session_id)
-    product_data = {
-        "product_id": product_id,
-        "name": name,
-        "price": float(price),
-        "quantity": int(quantity),
+    qty_key = _qty_key(session_id)
+    details_key = _details_key(session_id)
+    redis_client.hincrby(qty_key, details_key, quantity)
+    if not redis_client.exists(details_key):
+        product_data = {
+            "product_id": product_id,
+            "name": name,
+            "price": float(price),
 
-    }
-
-    redis_client.hset(cart_key, product_id, json.dumps(product_data))
+        }
+        redis_client.hset(details_key, product_id, json.dumps(product_data))
+    _refresh_cart_ttl(session_id)
 
 
 def get_cart(session_id):
-    key = _cart_key(session_id)
-    raw_cart = redis_client.hgetall(key)
-    return [json.loads(item) for item in raw_cart.values()]
+    qtys = redis_client.hgetall(_qty_key(session_id))
+    details = redis_client.hgetall(_details_key(session_id))
+
+    cart_items = []
+    for pid, qty in qtys.items():
+        detail_json = details.get(pid)
+        if not detail_json:
+            continue
+        data = json.loads(detail_json)
+        data['quantity'] = int(qty)
+        cart_items.append(data)
+    return cart_items
 
 
 def remove_cart(session_id, product_id):
-    key = _cart_key(session_id)
-    redis_client.hdel(key, product_id)
+    redis_client.hdel(_qty_key(session_id), product_id)
+    redis_client.hdel(_details_key(session_id), product_id)
+
+    if redis_client.hlen(_qty_key(session_id)) == 0:
+        redis_client.delete(f"cart:{session_id}:promo_code")
+
+        _refresh_cart_ttl(session_id)
 
 
 def clear_cart(session_id):
-    key = _cart_key(session_id)
-    redis_client.delete(key)
+    redis_client.delete(_qty_key(session_id))
+    redis_client.delete(_details_key(session_id))
+    redis_client.delete(f"{_cart_key(session_id)}:promo_code")
 
 
 def get_cart_promo_code(session_id):
@@ -60,47 +83,20 @@ def get_cart_promo_code(session_id):
 
 
 def increment_quantity(session_id, product_id, step=1):
-    pipe = redis_client.pipeline()
-    pipe.hincrby(_qty_key(session_id), product_id, step)
-    _refresh_cart_ttl_pipe(pipe, session_id)
-    pipe.execute()
+    redis_client.hincrby(_qty_key(session_id), product_id, step)
+    _refresh_cart_ttl(session_id)
     return True
 
 
 def decrement_quantity(session_id, product_id, step=1):
     qty_key = _qty_key(session_id)
-    details_key = _details_key(session_id)
+    new_qty = redis_client.hincrby(qty_key, product_id, -step)
+    if new_qty < 1:
+        redis_client.hdel(qty_key, product_id)
+        redis_client.hdel(_details_key(session_id), product_id)
 
-    MAX_ATTEMPTS = 5
-
-    for attempt in range(MAX_ATTEMPTS):
-        try:
-            with redis_client.pipeline() as pipe:
-                pipe.watch(qty_key)
-
-                # Use direct client method (not through pipe)
-                current_qty = redis_client.hget(qty_key, product_id)
-                if current_qty is None:
-                    pipe.unwatch()
-                    return False
-
-                current_qty = int(current_qty)
-                new_qty = current_qty - step
-
-                pipe.multi()
-
-                if new_qty < 1:
-                    pipe.hdel(qty_key, product_id)
-                    pipe.hdel(details_key, product_id)
-                else:
-                    pipe.hset(qty_key, product_id, new_qty)
-
-                _refresh_cart_ttl_pipe(pipe, session_id)
-                pipe.execute()
-                return True
-
-        except redis_client.WatchError:
-            continue
+    _refresh_cart_ttl(session_id)
+    return True
 
 
 def set_quantity(session_id, product_id, quantity):
@@ -121,7 +117,6 @@ def set_quantity(session_id, product_id, quantity):
     return True
 
 
-
 def set_cart_promo_code(session_id, promo_code):
     pipe = redis_client.pipeline()
     pipe.set(f"{_cart_key(session_id)}:promo_code", promo_code)
@@ -129,34 +124,23 @@ def set_cart_promo_code(session_id, promo_code):
     pipe.execute()
 
 
-
 def update_cart_item(session_id, product_id, name, price, quantity):
-    pipe = redis_client.pipeline()
     details = {
         "product_id": product_id,
         "name": name,
         "price": float(price),
     }
 
-    pipe.hset(_details_key(session_id), product_id, json.dumps(details))
-    pipe.hset(_qty_key(session_id), product_id, quantity)
-    _refresh_cart_ttl_pipe(pipe, session_id)
-    pipe.execute()
-
-
+    redis_client.hset(_details_key(session_id), product_id, json.dumps(details))
+    redis_client.hset(_qty_key(session_id), product_id, quantity)
+    _refresh_cart_ttl(session_id)
 
 
 def remove_from_cart(session_id, product_id):
-    qty_key = _qty_key(session_id)
-    details_key = _details_key(session_id)
-    promo_key = f"{_cart_key(session_id)}:promo_code"
+    redis_client.hdel(_qty_key(session_id), product_id)
+    redis_client.hdel(_details_key(session_id), product_id)
 
-    pipe = redis_client.pipeline()
-    pipe.hdel(qty_key, product_id)
-    pipe.hdel(details_key, product_id)
+    if redis_client.hlen(_qty_key(session_id)) == 0:
+        redis_client.delete(f"{_cart_key(session_id)}:promo_code")
 
-    if redis_client.hlen(qty_key) == 0:  # 1 left before deletion
-        pipe.delete(promo_key)
-
-    _refresh_cart_ttl_pipe(pipe, session_id)
-    pipe.execute()
+        _refresh_cart_ttl(session_id)
