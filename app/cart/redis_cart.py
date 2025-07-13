@@ -21,12 +21,6 @@ def _refresh_cart_ttl_pipe(pipe, session_id):
     pipe.expire(f"{_cart_key(session_id)}:promo_code", CART_TTL)
 
 
-def _refresh_cart_ttl(session_id):
-    redis_client.expire(_qty_key(session_id), CART_TTL)
-    redis_client.expire(_details_key(session_id), CART_TTL)
-    redis_client.expire(f"{_cart_key(session_id)}:promo_code", CART_TTL)
-
-
 def _qty_key(session_id):
     return f"{_cart_key(session_id)}:qty"
 
@@ -34,16 +28,19 @@ def _qty_key(session_id):
 def add_to_cart(session_id, product_id, quantity, name, price):
     qty_key = _qty_key(session_id)
     details_key = _details_key(session_id)
-    redis_client.hincrby(qty_key, details_key, quantity)
-    if not redis_client.exists(details_key):
+    pipe = redis_client.pipeline()
+    pipe.hincrby(details_key, product_id, quantity)
+
+    if not redis_client.hexists(details_key, product_id):
         product_data = {
             "product_id": product_id,
             "name": name,
             "price": float(price),
 
         }
-        redis_client.hset(details_key, product_id, json.dumps(product_data))
-    _refresh_cart_ttl(session_id)
+        pipe.hset(details_key, product_id, json.dumps(product_data))
+    _refresh_cart_ttl_pipe(pipe, session_id)
+    pipe.execute()
 
 
 def get_cart(session_id):
@@ -62,19 +59,27 @@ def get_cart(session_id):
 
 
 def remove_cart(session_id, product_id):
-    redis_client.hdel(_qty_key(session_id), product_id)
-    redis_client.hdel(_details_key(session_id), product_id)
+    qty_key = _qty_key(session_id)
+    details_key = _details_key(session_id)
+    promote_key = f"{_cart_key(session_id)}:promote"
 
-    if redis_client.hlen(_qty_key(session_id)) == 0:
-        redis_client.delete(f"cart:{session_id}:promo_code")
+    pipe = redis_client.pipeline()
+    pipe.hdel(qty_key, product_id)
+    pipe.hdel(details_key, product_id)
 
-        _refresh_cart_ttl(session_id)
+    if redis_client.hlen(qty_key) == 0:
+        pipe.delete(promote_key)
+
+    _refresh_cart_ttl_pipe(pipe, session_id)
+    pipe.execute()
 
 
 def clear_cart(session_id):
-    redis_client.delete(_qty_key(session_id))
-    redis_client.delete(_details_key(session_id))
-    redis_client.delete(f"{_cart_key(session_id)}:promo_code")
+    pipe = redis_client.pipeline()
+    pipe.delete(_qty_key(session_id))
+    pipe.delete(_details_key(session_id))
+    pipe.delete(f"{_cart_key(session_id)}:promo_code")
+    pipe.execute()
 
 
 def get_cart_promo_code(session_id):
@@ -83,19 +88,27 @@ def get_cart_promo_code(session_id):
 
 
 def increment_quantity(session_id, product_id, step=1):
-    redis_client.hincrby(_qty_key(session_id), product_id, step)
-    _refresh_cart_ttl(session_id)
+    pipe = redis_client.pipeline()
+    pipe.hincrby(_qty_key(session_id), product_id, step)
+    _refresh_cart_ttl_pipe(pipe, session_id)
+    pipe.execute()
     return True
 
 
 def decrement_quantity(session_id, product_id, step=1):
     qty_key = _qty_key(session_id)
+    details_key = _details_key(session_id)
     new_qty = redis_client.hincrby(qty_key, product_id, -step)
     if new_qty < 1:
+        pipe = redis_client.pipeline()
         redis_client.hdel(qty_key, product_id)
-        redis_client.hdel(_details_key(session_id), product_id)
-
-    _refresh_cart_ttl(session_id)
+        redis_client.hdel(_details_key, product_id)
+        _refresh_cart_ttl_pipe(pipe,session_id)
+        pipe.execute()
+    else:
+        pipe = redis_client.pipeline()
+        _refresh_cart_ttl_pipe(pipe, session_id)
+        pipe.execute()
     return True
 
 
@@ -125,6 +138,7 @@ def set_cart_promo_code(session_id, promo_code):
 
 
 def update_cart_item(session_id, product_id, name, price, quantity):
+    pipe = redis_client.pipeline()
     details = {
         "product_id": product_id,
         "name": name,
@@ -133,7 +147,8 @@ def update_cart_item(session_id, product_id, name, price, quantity):
 
     redis_client.hset(_details_key(session_id), product_id, json.dumps(details))
     redis_client.hset(_qty_key(session_id), product_id, quantity)
-    _refresh_cart_ttl(session_id)
+    _refresh_cart_ttl_pipe(pipe,session_id)
+    pipe.execute()
 
 
 def remove_from_cart(session_id, product_id):
